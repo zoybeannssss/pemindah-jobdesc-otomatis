@@ -1,6 +1,6 @@
 # pemindah-jobdesc-otomatis V-6
 
-# dibuat by Feliciona (OD intern)
+# dibuat by Feliciona Sharlene (OD intern)
 # cara pakai
 # masukkan JOB DESC TEMPLATE LAMA ke folder "input_jobdesc_lama" 
 # seclect terlebih dulu folder "input_jobdesc_lama" lalu klik kanan klik "upload"
@@ -13,4 +13,4 @@
 "python main.py" lalu enter (TIDAK PERLU TANDA "")
 # tunggu program ter-eksekusi kemudian download semua file yang ada di "output_jobdesc_baru
 
-# SELAMAT MENCOBA <3 
+# <3 SELAMAT MENCOBA <3 

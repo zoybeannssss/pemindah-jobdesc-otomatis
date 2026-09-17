@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pemindah Job Desc 4.0</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f9f9f9;
+            text-align: center;
+            padding-top: 50px;
+        }
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 40px;
+            color: #111;
+        }
+        .upload-btn {
+            background-color: #FFD43B;
+            color: #000;
+            padding: 15px 30px;
+            font-size: 1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: inline-block;
+        }
+        .upload-container {
+            margin-bottom: 30px;
+        }
+        #file-status {
+            margin-top: 10px;
+            font-size: 0.9rem;
+            color: #16A34A;
+            font-weight: 600;
+        }
+        .dept-section {
+            margin-bottom: 30px;
+        }
+        .dept-section p {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .dept-input {
+            width: 350px;
+            padding: 12px;
+            font-size: 1rem;
+            background-color: #CBD5E1;
+            border: none;
+            border-radius: 8px;
+            text-align: center;
+            color: #1E293B;
+            outline: none;
+        }
+        .start-btn {
+            background-color: #16A34A;
+            color: white;
+            padding: 15px 50px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 14px;
+            cursor: pointer;
+            display: block;
+            margin: 0 auto 20px auto;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .start-btn:active {
+            transform: scale(0.98);
+        }
+        .download-btn {
+            background-color: #4B5563; 
+            color: white;
+            padding: 15px 50px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 14px;
+            cursor: not-allowed;
+            display: block;
+            margin: 0 auto;
+            text-decoration: none;
+            width: fit-content;
+        }
+        .download-btn.active {
+            background-color: #1800AD; 
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Pemindah Job Desc 4.0</h1>
+
+    <!-- 1. Upload File -->
+    <div class="upload-container">
+        <label for="file-upload" class="upload-btn">
+            📁 Upload File JD Lama
+        </label>
+        <input id="file-upload" type="file" name="files" multiple style="display: none;" onchange="uploadFiles(this)">
+        <div id="file-status"></div>
+    </div>
+
+    <!-- 2. Input Nama Departemen (Terhubung real-time ke DepartmentName.txt) -->
+    <div class="dept-section">
+        <p>isi nama departemen (Case sensitive)</p>
+        <input type="text" id="deptInput" class="dept-input" placeholder="(fill in)" oninput="saveDepartment()">
+    </div>
+
+    <!-- 3. Tombol Start Konversi -->
+    <button type="button" class="start-btn" onclick="startConversion()">Start Konversi!</button>
+
+    <!-- 4. Tombol Download Files Tunggal -->
+    <a href="#" id="downloadBtn" class="download-btn {% if has_files %}active{% endif %}" onclick="downloadAllFiles(event)">Download Files</a>
+
+    <script>
+        let generatedFiles = [];
+
+        function uploadFiles(input) {
+            if (input.files.length > 0) {
+                let formData = new FormData();
+                for (let i = 0; i < input.files.length; i++) {
+                    formData.append('files', input.files[i]);
+                }
+                document.getElementById('file-status').innerText = "Mengunggah file...";
+
+                fetch('/upload', { method: 'POST', body: formData })
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('file-status').innerText = `✔ ${input.files.length} file berhasil di-upload!`;
+                });
+            }
+        }
+
+        // Menyimpan teks ketikan secara langsung ke DepartmentName.txt tanpa tanda petik
+        function saveDepartment() {
+            let deptName = document.getElementById('deptInput').value;
+            fetch('/save_dept', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ department_name: deptName })
+            });
+        }
+
+        function startConversion() {
+            let deptName = document.getElementById('deptInput').value;
+            
+            fetch('/save_dept', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ department_name: deptName })
+            }).then(() => {
+                alert("Memulai konversi... Mohon tunggu sebentar.");
+                
+                fetch('/run_script', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        alert("Konversi Selesai! Tombol Download sekarang aktif.");
+                        generatedFiles = data.files;
+                        
+                        let dlBtn = document.getElementById('downloadBtn');
+                        dlBtn.classList.add('active');
+                        dlBtn.style.cursor = 'pointer';
+                    } else {
+                        alert("Terjadi kesalahan: " + data.message);
+                    }
+                });
+            });
+        }
+
+        function downloadAllFiles(event) {
+            event.preventDefault();
+            let dlBtn = document.getElementById('downloadBtn');
+            
+            if (!dlBtn.classList.contains('active')) {
+                alert('Belum ada file hasil konversi!');
+                return;
+            }
+
+            if (generatedFiles.length === 0) {
+                alert('Tidak ada file untuk diunduh.');
+                return;
+            }
+
+            generatedFiles.forEach((filename, index) => {
+                setTimeout(() => {
+                    let a = document.createElement('a');
+                    a.href = `/download/${filename}`;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                }, index * 300);
+            });
+        }
+    </script>
+
+</body>
+</html>

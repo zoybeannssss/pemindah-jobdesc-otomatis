@@ -37,7 +37,7 @@ def extract_specific_tasks(source_sheet):
     current_item = None
     is_in_spesifik = False
     
-    start_col = 22  # Kolom V
+    start_col = 21  # Kolom V
     end_col = 41    # Kolom AO
 
     for row in range(1, source_sheet.max_row + 1):
@@ -157,99 +157,416 @@ def extract_specific_tasks(source_sheet):
 
 
 import re
-from openpyxl.styles import Border, Side
-
-
 
 def extract_internal_connection(source_sheet):
     """
-    Ekstraksi Internal dari Job Desc Lama:
-    - Mengabaikan header seperti 'a. Internal', 'Internal', atau kalimat pengantar.
-    - Hanya mengambil baris poin-poin isinya saja.
+    Ekstraksi Keterkaitan Pihak Lain (Internal):
+    - Mengenali poin dengan angka numerik (1., 2.) maupun simbol minus (-).
+    - Mengabaikan baris pengantar 'Menjalin informasi... menyangkut :'.
+    - Berhenti total (break) jika menyentuh bab/komponen lain (Eksternal, Wewenang, Job Spec, dll).
+    - Menghasilkan daftar teks bersih siap dinomori di template baru.
     """
     internal_items = []
     is_in_internal = False
     
+    # Keyword untuk menghentikan ekstraksi agar komponen lain tidak ikut terseret
+    stop_keywords = [
+        "B. EKSTERNAL", "EKSTERNAL", "WEWENANG", "BATASAN WEWENANG", 
+        "TANGGUNG JAWAB", "TANGGUNGJAWAB", "JOB SPECIFICATION", 
+        "PERSYARATAN JABATAN", "PENDIDIKAN", "PENGALAMAN"
+    ]
+
+    # Regex untuk mendeteksi apakah baris merupakan poin baru (angka atau simbol -/*)
+    bullet_or_num_pattern = re.compile(r'^\s*(?:[\-\•\*\–]|\(?\d+[\.\)]?)\s*')
+
     for row in range(1, source_sheet.max_row + 1):
         try:
+            row_texts = []
             col_b_val = str(source_sheet.cell(row=row, column=2).value or "").strip()
             col_c_val = str(source_sheet.cell(row=row, column=3).value or "").strip()
-            
-            full_row_text = " ".join([str(source_sheet.cell(row=row, column=col).value or "") for col in range(1, 10)]).strip()
+
+            for col in range(2, 19):  # Membaca Kolom B s.d. R
+                val = source_sheet.cell(row=row, column=col).value
+                if val is not None:
+                    v_str = str(val).strip()
+                    if v_str:
+                        row_texts.append(v_str)
+
+            full_row_text = " ".join(row_texts).strip()
             upper_row_text = full_row_text.upper()
         except Exception:
             continue
 
-        # 1. Deteksi awal bab Internal
+        if not upper_row_text:
+            continue
+
+        # 1. DETEKSI PINTU MASUK SECTION INTERNAL
         if not is_in_internal:
-            if "INTERNAL" in upper_row_text or ("KETERKAITAN" in upper_row_text and "PIHAK LAIN" in upper_row_text):
+            if "A. INTERNAL" in upper_row_text or upper_row_text == "INTERNAL":
                 is_in_internal = True
                 continue
 
-        # 2. Jika sedang di dalam section Internal
+        # 2. PENGAMAN STOP MUTLAK (Mencegah bab/komponen lain ikut tersedot)
         if is_in_internal:
-            # STOP jika sudah mencapai bab lain (misal Eksternal atau Spesifik)
-            stop_keywords = ["EKSTERNAL", "B. EKSTERNAL", "WEWENANG", "TANGGUNG JAWAB", "TUGAS POKOK", "SPESIFIK"]
-            if any(kw in upper_row_text for kw in stop_keywords) and not "MENJALIN" in upper_row_text:
+            # Berhenti jika menemukan judul section/bab penghenti
+            if any(kw == upper_row_text or upper_row_text.startswith(kw) for kw in stop_keywords):
+                break
+                
+            # Berhenti jika mendeteksi penomoran 90+ dari section lain
+            match_num = re.match(r'^\s*(\d+)[\.\)]?', col_b_val)
+            if match_num and int(match_num.group(1)) >= 90:
                 break
 
-            # ABISKAN/IGNORE HEADER & PENGANTAR:
-            # - Baris yang hanya bertuliskan "a. Internal", "Internal", dll.
-            # - Kalimat pengantar "Menjalin informasi dan komunikasi..."
-            if any(h in upper_row_text for h in ["A. INTERNAL", "INTERNAL", "KETERKAITAN DENGAN PIHAK LAIN"]):
-                continue
-            if any(k in upper_row_text for k in ["MENJALIN", "MENYANGKUT", "KOMUNIKASI", "INFORMASI"]) and ":" in upper_row_text:
+            # 3. ABAIKAN KALIMAT PENGANTAR
+            if "MENJALIN INFORMASI" in upper_row_text or "MENYANGKUT" in upper_row_text:
                 continue
 
-            # Tangkap baris poin valid di bawahnya
-            combined_line = f"{col_b_val} {col_c_val}".strip()
-            if combined_line and combined_line != "-":
-                if combined_line not in internal_items:
-                    internal_items.append(combined_line)
+            # 4. PENENTUAN TEKS TARGET
+            target_text = col_c_val if col_c_val else col_b_val
+            if not target_text and row_texts:
+                target_text = full_row_text
+
+            if not target_text or target_text == "-":
+                continue
+
+            # Cek apakah baris ini poin baru (pakai angka / '-') atau sambungan baris atasnya
+            is_new_point = bool(bullet_or_num_pattern.match(col_b_val)) or \
+                           bool(bullet_or_num_pattern.match(target_text))
+
+            # Bersihkan angka/simbol minus (-) dari depan teks
+            cleaned_text = bullet_or_num_pattern.sub('', target_text).strip()
+            while cleaned_text.startswith('-') or cleaned_text.startswith('–'):
+                cleaned_text = cleaned_text.lstrip('-–').strip()
+
+            if cleaned_text:
+                if is_new_point:
+                    internal_items.append(cleaned_text)
+                else:
+                    # Jika baris lanjutan tanpa nomor/strip (seperti 'wfefwef...'), gabungkan ke poin sebelumnya
+                    if internal_items:
+                        internal_items[-1] += f" {cleaned_text}"
+                    else:
+                        internal_items.append(cleaned_text)
 
     return internal_items
 
 
-def write_internal_connection_to_template(target_sheet, start_row, internal_items):
+import re
+
+def extract_external_xyz_connection(source_sheet):
     """
-    Menuliskan ke Template Baru secara rapi & adaptif:
-    - Kolom B: Nomor urut berurutan secara adaptif (1., 2., 3., dst.).
-    - Kolom C: Teks poin murni tanpa simbol '-' atau nomor lama.
-    - Border: Menambal border kiri & kanan secara otomatis sesuai jumlah baris.
+    Ekstraksi Hubungan Eksternal XYZ:
+    - Menghapus string pengantar deskriptif tertentu.
+    - Menghentikan proses (BREAK) seketika jika menemukan 'JOB DESCRIPTION' atau kata kunci stop lainnya.
+    - Akurat memisahkan antara baris sambungan (multiline text) dan poin baru (bullet/numerik).
+    - Berhenti total jika nomor urut melebihi 90+.
     """
-    current_row = start_row
+    external_xyz_items = []
+    is_in_ext_xyz = False
     
-    # Border style tipis standar template
-    thin_side = Side(style='thin', color='000000')
-    left_border = Border(left=thin_side)
-    right_border = Border(right=thin_side)
+    # Keyword pemicu awal bab eksternal
+    trigger_keywords = [
+        "BERHUBUNGAN DENGAN SELURUH DEPARTEMEN",
+        "BERHUBUNGAN DENGAN DEPARTEMEN USER",
+        "BERHUBUNGAN DENGAN DEPARTEMEN",
 
-    point_counter = 1
-    for item in internal_items:
-        item_str = str(item).strip()
-        
-        # Bersihkan simbol lama (seperti '-', '•', '*', atau angka lama di awal) agar bersih total
-        cleaned_text = re.sub(r'^[\-\•\*\d+[\.\)]]\s*', '', item_str).strip()
-        while cleaned_text.startswith('-') or cleaned_text.startswith('–'):
-            cleaned_text = cleaned_text.lstrip('-–').strip()
+    ]
+    
+    # Frasa pengantar spesifik yang ingin dihapus total sebelum ekstraksi poin
+    unwanted_phrases = [
+        "batasan wewenangnya atau atas persetujuan atasan, perihal:",
+        "batasan wewenangnya atau atas persetujuan atasan",
+        "sesuai dengan batasan wewenangnya",
+        "perihal:"
+    ]
+    
+    # Kata kunci penghentian mutlak
+    stop_keywords = [
+        "JOB DESCRIPTION", "JOB SPECIFICATION", "POSISI JABATAN", 
+        "WEWENANG", "TANGGUNG JAWAB", "TANGGUNGJAWAB", "PERSYARATAN", 
+        "HUBUNGAN KERJA", "PENDIDIKAN", "TRAINING", 
+        "PENGALAMAN", "SIKAP KERJA", "TUGAS POKOK"
+    ]
 
-        if not cleaned_text:
+    # Regex untuk mendeteksi bullet/simbol ATAU angka numerik (1., 1), (1), dst)
+    pattern_bullet_or_num = r'^\s*(?:[\-\•\*\–]|\(?\d+[\.\)]?\s*\-?)'
+
+    for row in range(1, source_sheet.max_row + 1):
+        try:
+            row_texts = []
+            col_b_val = ""
+            col_c_val = ""
+            
+            # Scan Kolom B (2) sampai R (18)
+            for col in range(2, 19):
+                val = source_sheet.cell(row=row, column=col).value
+                if val is not None:
+                    v_str = str(val).strip()
+                    if v_str:
+                        row_texts.append(v_str)
+                        if col == 2:
+                            col_b_val = v_str
+                        elif col == 3:
+                            col_c_val = v_str
+            
+            full_row_text = " ".join(row_texts).strip()
+            
+            # Pembersihan frasa pengantar yang tidak diinginkan
+            cleaned_full_row = full_row_text
+            for phrase in unwanted_phrases:
+                cleaned_full_row = re.sub(re.escape(phrase), '', cleaned_full_row, flags=re.IGNORECASE).strip()
+
+            upper_row_text = cleaned_full_row.upper()
+        except Exception:
             continue
 
-        # 1. Kolom B template baru: Nomor urut berurutan adaptif (1., 2., 3., dst.)
-        target_sheet.cell(row=current_row, column=2).value = f"{point_counter}."
-        
-        # 2. Kolom C template baru: Teks murni
-        target_sheet.cell(row=current_row, column=3).value = cleaned_text
+        if not upper_row_text:
+            continue
 
-        # 3. Penambalan border kiri (kolom 1) dan kanan (kolom 20) secara persis
-        target_sheet.cell(row=current_row, column=1).border = left_border
-        target_sheet.cell(row=current_row, column=20).border = right_border
+        # ----------------------------------------------------
+        # 1. PENGAMAN STOP MUTLAK (PRIORITAS UTAMA SEBELUM PROSES)
+        # ----------------------------------------------------
+        if is_in_ext_xyz:
+            # Cek apakah ada kata kunci stop seperti JOB DESCRIPTION
+            if any(kw in upper_row_text for kw in stop_keywords):
+                break
 
-        point_counter += 1
-        current_row += 1
+            # Cek penomoran angka 90+ di Kolom B maupun di teks baris
+            match_num_b = re.match(r'^\s*(\d+)[\.\)]?', col_b_val)
+            match_num_full = re.match(r'^\s*(\d+)[\.\)]?', full_row_text)
+            
+            if (match_num_b and int(match_num_b.group(1)) >= 90) or \
+               (match_num_full and int(match_num_full.group(1)) >= 90):
+                break
 
-    return current_row
+        # 2. AKTIFKAN MODE EKSTRAKSI
+        if not is_in_ext_xyz:
+            full_original_upper = full_row_text.upper()
+            if any(kw in full_original_upper for kw in trigger_keywords):
+                is_in_ext_xyz = True
+                
+                # Cek apakah baris pemicu ini sudah langsung berisi bullet/angka
+                is_bullet_in_row = bool(re.search(pattern_bullet_or_num, col_b_val)) or \
+                                   bool(re.search(pattern_bullet_or_num, col_c_val))
+                if not is_bullet_in_row:
+                    continue  # Skip baris pengantar
+
+        # 3. PROSES EKSTRAKSI POIN
+        if is_in_ext_xyz:
+            # Cek keberadaan bullet/numerik
+            has_bullet_or_num = bool(re.search(pattern_bullet_or_num, col_b_val)) or \
+                                bool(re.search(pattern_bullet_or_num, col_c_val)) or \
+                                bool(re.search(pattern_bullet_or_num, full_row_text))
+
+            # Jika TANPA bullet/numerik (Sambungan Teks / Multiline):
+            if not has_bullet_or_num:
+                if external_xyz_items and not any(kw in upper_row_text for kw in trigger_keywords):
+                    target_text = col_c_val if col_c_val else full_row_text
+                    for phrase in unwanted_phrases:
+                        target_text = re.sub(re.escape(phrase), '', target_text, flags=re.IGNORECASE).strip()
+                    if target_text:
+                        external_xyz_items[-1] += " " + target_text
+                continue
+
+            # Jika ADA bullet/numerik (Poin Baru):
+            target_text = col_c_val if col_c_val else col_b_val
+            if not target_text or target_text in ["-", "–"]:
+                target_text = full_row_text
+
+            if not target_text or target_text in ["-", "–"]:
+                continue
+
+            # Hapus frasa pengantar jika ikut terbawa
+            for phrase in unwanted_phrases:
+                target_text = re.sub(re.escape(phrase), '', target_text, flags=re.IGNORECASE).strip()
+
+            # Bersihkan simbol bullet maupun angka numerik lama di awal teks
+            cleaned = re.sub(r'^\s*(?:\(?\d+[\.\)]?\s*\-?|[\-\•\*\–])\s*', '', target_text).strip()
+
+            # Pastikan teks yang dibersihkan tidak mengandung kata kunci stop secara tidak sengaja
+            if cleaned and not any(kw in cleaned.upper() for kw in stop_keywords):
+                if cleaned not in external_xyz_items:
+                    external_xyz_items.append(cleaned)
+
+    return external_xyz_items
+
+import re
+import openpyxl
+
+def extract_external_connection(source_sheet):
+    """
+    Ekstraksi Hubungan Eksternal Utama:
+    - Membaca poin angka numerik (1., 2., 3.) maupun tanda strip (- / • / *).
+    - Membedakan secara akurat antara poin utama baru dan baris lanjutan (multiline text).
+    - BERHENTI TOTAL (BREAK) jika menyentuh 'Berhubungan dengan departemen user' atau bab lain.
+    """
+    external_items = []
+    is_in_ext = False
+    
+    # Regex pola penomoran numerik berurutan maupun simbol strip/bullet
+    pattern_bullet_or_num = r'^\s*(?:\(?\d+[\.\)]?\s*\-?|[\-\•\*\–])'
+
+    # Kata kunci penghentian mutlak (TAMBAHAN: DEPARTEMEN USER)
+    stop_keywords = [
+        "DEPARTEMEN USER", "BERHUBUNGAN DENGAN DEPARTEMEN USER",
+        "WEWENANG", "KEWENANGAN", "TUGAS POKOK SPESIFIK", "SPESIFIK", 
+        "TUGAS POKOK", "TANGGUNG JAWAB", "TANGGUNGJAWAB", "PENDIDIKAN", 
+        "TRAINING", "PERSYARATAN", "HUBUNGAN KERJA", "KETERKAITAN", 
+        "SIKAP KERJA", "PENGALAMAN", "A. POSISI JABATAN", "JOB DESCRIPTION", "JOB SPECIFICATION"
+    ]
+
+    for row in range(1, source_sheet.max_row + 1):
+        try:
+            row_cells_vals = []
+            col_b_val = ""
+            col_c_val = ""
+
+            # Scan dari Kolom B (2) sampai R (18)
+            for col in range(2, 19):
+                cell = source_sheet.cell(row=row, column=col)
+                if isinstance(cell, openpyxl.cell.cell.MergedCell):
+                    continue
+                if cell.value is not None:
+                    v = str(cell.value).strip()
+                    if v:
+                        row_cells_vals.append((col, v))
+                        if col == 2:
+                            col_b_val = v
+                        elif col == 3:
+                            col_c_val = v
+            
+            if not row_cells_vals:
+                continue
+
+            full_line_str = " ".join([v for _, v in row_cells_vals]).strip()
+            upper_line = full_line_str.upper()
+        except Exception:
+            continue
+
+        # 1. PENGAMAN STOP MUTLAK: Jika sudah di area eksternal lalu mendeteksi DEPARTEMEN USER atau bab lain, STOP!
+        if is_in_ext:
+            if any(kw in upper_line for kw in stop_keywords):
+                break
+
+            # Stop jika menemukan penomoran bab besar (misal 90+)
+            match_num = re.match(r'^\s*(\d+)[\.\)]?', col_b_val)
+            if match_num and int(match_num.group(1)) >= 90:
+                break
+
+        # 2. PINTU MASUK: Deteksi Blok Eksternal Utama
+        if not is_in_ext:
+            # Pastikan bukan baris 'DEPARTEMEN USER'
+            if "DEPARTEMEN USER" not in upper_line:
+                if "EKSTERNAL" in upper_line and any(kw in upper_line for kw in ["MELIPUTI", "PERIHAL", "BERHUBUNGAN", "B. EKSTERNAL"]):
+                    is_in_ext = True
+                    
+                    # Cek apakah baris header pemicu ini sudah langsung memuat nomor/bullet/strip
+                    has_bullet = bool(re.search(pattern_bullet_or_num, col_b_val)) or bool(re.search(pattern_bullet_or_num, full_line_str))
+                    if not has_bullet:
+                        continue  # Skip baris header / pengantar awal
+
+        # 3. PROSES EKSTRAKSI POIN
+        if is_in_ext:
+            # Skip jika baris ini hanyalah teks pengantar tanpa nomor/strip/bullet
+            if any(k in upper_line for k in ["BERHUBUNGAN", "EKSTERNAL PERUSAHAAN", "BATASAN PERIHAL"]) and not re.search(pattern_bullet_or_num, full_line_str):
+                continue
+
+            # Periksa apakah baris ini diawali ANGKA NUMERIK ATAU TANDA STRIP/BULLET
+            has_num_or_bullet = bool(re.search(pattern_bullet_or_num, col_b_val)) or \
+                                bool(re.search(pattern_bullet_or_num, col_c_val)) or \
+                                bool(re.search(pattern_bullet_or_num, full_line_str))
+
+            # --- A. JIKA BARIS ADALAH SAMBUNGAN KALIMAT (TIDAK MEMILIKI NOMOR / STRIP BARU) ---
+            if not has_num_or_bullet:
+                if external_items:
+                    text_to_append = col_c_val if col_c_val else full_line_str
+                    text_to_append = re.sub(r'^\s*[\-\•\*\–]\s*', '', text_to_append).strip()
+                    
+                    if text_to_append and text_to_append != "-":
+                        # Gabungkan ke poin aktif sebelumnya
+                        external_items[-1] += " " + text_to_append
+                continue
+
+            # --- B. JIKA BARIS ADALAH POIN BARU (DIAWALI ANGKA 1., 2. ATAU STRIP -) ---
+            target_text = col_c_val if col_c_val else full_line_str
+            
+            # Bersihkan angka/strip/bullet lama di awal teks
+            cleaned_text = re.sub(r'^\s*(?:\(?\d+[\.\)]?\s*\-?|[\-\•\*\–])\s*', '', target_text).strip()
+
+            if cleaned_text and cleaned_text != "-" and cleaned_text not in external_items:
+                external_items.append(cleaned_text)
+
+    return external_items
+
+def get_department_code(department_name):
+    dictionary = {
+        "Human Capital": "HR55001",
+        "Quality Management System": "HR55002",
+        "QMS": "HR55002",
+        "Areso": "HR55003",
+        "Bahan": "HR55004",
+        "COR": "HR55005",
+        "EG": "HR55006",
+        "Elegant Gold": "HR55006",
+        "EGV": "HR55007",
+        "Elegant Gold Variasi": "HR55007",
+        "Finishing Central": "HR55008",
+        "FC": "HR55008",
+        "Hollow": "HR55009",
+        "Kalung": "HR55010",
+        "RnD": "HR55011",
+        "R&D": "HR55011",
+        "Research & Development": "HR55011",
+        "Variasi": "HR55012",
+        "Marketing Ekspor": "HR55013",
+        "Marketing Lokal": "HR55014",
+        "ICT": "HR55015",
+        "Information Communication Technology": "HR55015",
+        "Maintenance": "HR55016",
+        "Procurement & Logistic": "HR55017",
+        "PPIC": "HR55018",
+        "Keamanan Dalam": "HR55019",
+        "Kamdal": "HR55019",
+        "Chemical": "HR55020",
+        "Strategic Management Officer": "HR55021",
+        "SMO": "HR55021",
+        "Finance": "HR55023",
+        "Tax": "HR55024",
+        "Workshop": "HR55025",
+    }
+    
+    # Normalisasi teks masukan menjadi huruf besar dan hilangkan spasi ekstra
+    dept_upper = str(department_name).upper().strip()
+    
+    # Normalisasi keys pada dictionary agar pencocokan case-insensitive / fleksibel berhasil
+    normalized_dict = {k.upper().strip(): v for k, v in dictionary.items()}
+    
+    if dept_upper in normalized_dict:
+        return normalized_dict[dept_upper]
+    else:
+        return "000000"
+
+
+def process_document_code(target_sheet):
+    department_name = "QMS"  # Default fallback
+    txt_path = "DepartmentNameTitle.txt"
+    
+    # Membaca nama departemen langsung dari file DepartmentNameTitle.txt
+    if os.path.exists(txt_path):
+        with open(txt_path, "r", encoding="utf-8") as f:
+            dept_name_content = f.read().strip()
+            if dept_name_content:
+                department_name = dept_name_content
+
+    code = get_department_code(department_name)
+
+    # Mengganti placeholder CodeDocument di dalam sheet template baru
+    for row in range(1, target_sheet.max_row + 1):
+        for col in range(1, target_sheet.max_column + 1):
+            cell = target_sheet.cell(row=row, column=col)
+            if cell.value and isinstance(cell.value, str):
+                if "(CodeDocument)" in cell.value or "CodeDocument" in cell.value:
+                    cell.value = cell.value.replace("(CodeDocument)", code).replace("CodeDocument", code)
 
 def extract_wewenang(source_sheet):
     """
@@ -314,51 +631,26 @@ def extract_wewenang(source_sheet):
         
     return items
 
-def extract_external_xyz_connection(source_sheet):
-    """
-    Ekstraksi Hubungan Eksternal XYZ dari Job Desc Lama secara presisi.
-    """
-    external_xyz_items = []
-    is_in_ext_xyz = False
-    
-    for row in range(1, source_sheet.max_row + 1):
-        try:
-            col_b_val = str(source_sheet.cell(row=row, column=2).value or "").strip()
-            col_c_val = str(source_sheet.cell(row=row, column=3).value or "").strip()
-            
-            full_row_text = " ".join([str(source_sheet.cell(row=row, column=col).value or "") for col in range(1, 10)]).strip()
-            upper_row_text = full_row_text.upper()
-        except Exception:
-            continue
 
-        # 1. Deteksi awal bab Eksternal XYZ
-        if not is_in_ext_xyz:
-            if "BERHUBUNGAN DENGAN DEPARTEMEN USER" in upper_row_text or ("PT XYZ" in upper_row_text and "MELIPUTI" in upper_row_text):
-                is_in_ext_xyz = True
-                continue
+def process_department_name(target_sheet):
+    txt_path = "DepartmentNameTitle.txt"
+    if not os.path.exists(txt_path):
+        return
 
-        # 2. Jika sedang di dalam section Eksternal XYZ
-        if is_in_ext_xyz:
-            # STOP KETAT: Berhenti jika masuk bab lain
-            stop_keywords = [
-                "TRAINING", "PENDIDIKAN", "PENGALAMAN", "SIKAP KERJA", "SIKAP", 
-                "WEWENANG", "TANGGUNG JAWAB", "TANGGUNGJAWAB", "KETERKAITAN", 
-                "PERSYARATAN", "HUBUNGAN KERJA", "A. POSISI JABATAN", "D. TRAINING"
-            ]
-            if any(kw in upper_row_text for kw in stop_keywords):
-                break
+    with open(txt_path, "r", encoding="utf-8") as f:
+        dept_name_content = f.read().strip()  # Pakai .strip() agar bersih
 
-            # Abaikan baris header pengantarnya
-            if "BERHUBUNGAN DENGAN DEPARTEMEN USER" in upper_row_text:
-                continue
+    if not dept_name_content:
+        return
 
-            # Tangkap baris poin valid, abaikan baris yang kosong melompong
-            combined_line = f"{col_b_val} {col_c_val}".strip()
-            if combined_line and combined_line != "-":
-                if combined_line not in external_xyz_items:
-                    external_xyz_items.append(combined_line)
+    for row in range(1, target_sheet.max_row + 1):
+        for col in range(1, target_sheet.max_column + 1):
+            cell = target_sheet.cell(row=row, column=col)
+            if cell.value and isinstance(cell.value, str):
+                # Ubah pencarian dari "InputDepartmentName" menjadi "DepartmentName"
+                if "DepartmentName" in cell.value:
+                    cell.value = cell.value.replace("DepartmentName", dept_name_content)
 
-    return external_xyz_items
 
 def insert_rows_and_preserve_layout(ws, row_idx, amount):
     if amount <= 0:
@@ -393,40 +685,20 @@ def insert_rows_and_preserve_layout(ws, row_idx, amount):
         ws.row_dimensions[old_r + amount].height = h
 
 
-import os
-import re
-from openpyxl.styles import Font
-
 def process_job_title_from_filename(file_path, target_sheet):
-    """
-    Fungsi baru:
-    1. Membaca nama file asli dari dalam folder 'input_jobdesc_lama'.
-    2. Mengabaikan kode awalan (seperti Q52626) dan mengambil murni job title-nya.
-    3. Langsung menyisipkan job title tersebut ke cell 'X9' (yang merupakan PositionName / merged cells)
-       dengan format CAPS LOCK + BOLD.
-    """
-    # Ambil nama file tanpa ekstensi .xlsx
     filename = os.path.basename(file_path)
     filename_without_ext = os.path.splitext(filename)[0]
-    
-    # Ekstraksi Job Title: Buang awalan huruf (misal Q/q) diikuti angka dan pemisah apa pun di depannya
     job_title = re.sub(r'^[Qq]\d+[\s\-_]*', '', filename_without_ext).strip()
     job_title_caps = job_title.upper()
     
-    # Langsung incar cell X9 sesuai layout template baru
     target_cell = target_sheet['X9']
-    
-    # Tangani jika cell X9 merupakan bagian dari merged cells (arahkan ke cell pojok kiri atas)
     for merged_range in target_sheet.merged_cells.ranges:
         if 'X9' in merged_range:
             top_left_coord = merged_range.start_cell.coordinate
             target_cell = target_sheet[top_left_coord]
             break
             
-    # Masukkan job title yang sudah CAPS LOCK ke PositionName
     target_cell.value = job_title_caps
-    
-    # Terapkan format BOLD dan pertahankan font asli template
     current_font = target_cell.font
     if current_font:
         target_cell.font = Font(
@@ -440,6 +712,7 @@ def process_job_title_from_filename(file_path, target_sheet):
         target_cell.font = Font(bold=True)
         
     return job_title_caps
+
 
 def generate_new_filename(source_filename):
     base_name = os.path.splitext(source_filename)[0]
@@ -459,7 +732,7 @@ def process_single_file(source_path, output_dir):
             print(f"Error, job grading not found: {os.path.basename(source_path)}")
             return
 
-        print(f"🎯 [INFO] {os.path.basename(source_path)} menggunakan template: {os.path.basename(template_path)}")
+        print(f" [INFO] {os.path.basename(source_path)} menggunakan template: {os.path.basename(template_path)}")
 
         wb_src = openpyxl.load_workbook(source_path, data_only=True)
         sheet_src = wb_src.active
@@ -467,21 +740,19 @@ def process_single_file(source_path, output_dir):
         wb_tpl = openpyxl.load_workbook(template_path)
         sheet_tpl = wb_tpl.active
         
+        # Ekstraksi Data Sumber
         data_spesifik = extract_specific_tasks(sheet_src)
         data_internal = extract_internal_connection(sheet_src)
+        data_ext_xyz = extract_external_xyz_connection(sheet_src) # [FITUR BARU] Ekstraksi Eksternal XYZ
         data_wewenang = extract_wewenang(sheet_src)
 
-# Di dalam process_single_file, setelah memanggil ekstraktor lain:
-        data_ext_xyz = extract_external_xyz_connection(sheet_src)
-
-        
-     
-# --- TAMBAHKAN PEMANGGILAN FITUR BARU DI SINI ---
+        # Proses Header & Atribut Dokumen
         job_title_inserted = process_job_title_from_filename(source_path, sheet_tpl)
-        print(f"🏷️ [POSITION] Berhasil mengisi PositionName dengan: '{job_title_inserted}'")
-        # ---
+        print(f" [POSITION] Berhasil mengisi PositionName dengan: '{job_title_inserted}'")
+        
+        process_document_code(sheet_tpl)
+        process_department_name(sheet_tpl)
 
-        # MAIN_CHARS_PER_LINE = 130 dikunci sesuai permintaan
         MAIN_CHARS_PER_LINE = 130
         SUB_CHARS_PER_LINE = 125
 
@@ -499,7 +770,7 @@ def process_single_file(source_path, output_dir):
                 break
 
         if not target_row_spesifik:
-            print(f"❌ [GAGAL] Marker 'TugasPokokSpecificMoved' tidak ditemukan di template {os.path.basename(template_path)}")
+            print(f" [GAGAL] Marker 'TugasPokokSpecificMoved' tidak ditemukan di template {os.path.basename(template_path)}")
             return
 
         flattened_rows = []
@@ -535,6 +806,7 @@ def process_single_file(source_path, output_dir):
 
         font_arial_10 = Font(name="Arial", size=10, bold=False)
         double_side = Side(border_style="double", color="000000")
+        thin_side = Side(style='thin', color='000000')
         
         last_item_row = target_row_spesifik + total_needed_rows - 1
         spacer_row = last_item_row + 1  
@@ -566,7 +838,7 @@ def process_single_file(source_path, output_dir):
 
             sheet_tpl.cell(row=curr_row, column=2).border = Border(left=double_side, top=None, bottom=None)
             sheet_tpl.cell(row=curr_row, column=41).border = Border(right=double_side, top=None, bottom=None)
-            sheet_tpl.cell(row=curr_row, column=42).border = Border(left=double_side, top=None, bottom=None)
+            sheet_tpl.cell(row=curr_row, column=43).border = Border(left=double_side, top=None, bottom=None)
             sheet_tpl.cell(row=curr_row, column=63).border = Border(right=double_side, top=None, bottom=None)
 
         sheet_tpl.row_dimensions[spacer_row].height = 16.5
@@ -574,7 +846,7 @@ def process_single_file(source_path, output_dir):
         sheet_tpl.cell(row=spacer_row, column=3).value = ""
         sheet_tpl.cell(row=spacer_row, column=2).border = Border(left=double_side, top=None, bottom=None)
         sheet_tpl.cell(row=spacer_row, column=41).border = Border(right=double_side, top=None, bottom=None)
-        sheet_tpl.cell(row=spacer_row, column=42).border = Border(left=double_side, top=None, bottom=None)
+        sheet_tpl.cell(row=spacer_row, column=43).border = Border(left=double_side, top=None, bottom=None)
         sheet_tpl.cell(row=spacer_row, column=63).border = Border(right=double_side, top=None, bottom=None)
 
         for c in range(2, 64):
@@ -586,76 +858,9 @@ def process_single_file(source_path, output_dir):
                 top=None,
                 bottom=double_side
             )
+
 # ==========================================
-        # PROSES EXTERNAL XYZ CONNECTION (RAPAT TANPA GAP)
-        # ==========================================
-        target_row_ext_xyz = None
-        target_col_ext_xyz = None
-        
-        for r in range(1, sheet_tpl.max_row + 1):
-            for c in range(1, sheet_tpl.max_column + 1):
-                val = sheet_tpl.cell(row=r, column=c).value
-                if val and "EXTERNALXYZCONNECTION" in str(val).upper():
-                    target_row_ext_xyz = r
-                    target_col_ext_xyz = c
-                    break
-            if target_row_ext_xyz:
-                break
-
-        if target_row_ext_xyz:
-            EXT_XYZ_CHARS_PER_LINE = 55
-            flattened_ext_xyz = []
-            
-            bullet_counter = 1
-            for text_item in data_ext_xyz:
-                cleaned_text = str(text_item).strip()
-                while cleaned_text.startswith('-') or cleaned_text.startswith('–'):
-                    cleaned_text = cleaned_text.lstrip('-–').strip()
-
-                if not cleaned_text:
-                    continue
-
-                lines = textwrap.wrap(
-                    cleaned_text, 
-                    width=EXT_XYZ_CHARS_PER_LINE, 
-                    break_long_words=True, 
-                    break_on_hyphens=False
-                ) or [""]
-                
-                for l_idx, line in enumerate(lines):
-                    flattened_ext_xyz.append({
-                        "no": f"{bullet_counter}." if l_idx == 0 else "",
-                        "text": line
-                    })
-                bullet_counter += 1
-
-            if not flattened_ext_xyz:
-                flattened_ext_xyz.append({"no": "", "text": "-"})
-
-            # Atur tinggi dan sisipkan baris secara pas tanpa menyisakan baris kosong
-            max_default_ext_rows = 3
-            total_needed_ext = len(flattened_ext_xyz)
-            
-            if total_needed_ext > max_default_ext_rows:
-                extra_ext_rows = total_needed_ext - max_default_ext_rows
-                insert_rows_and_preserve_layout(sheet_tpl, row_idx=target_row_ext_xyz + max_default_ext_rows, amount=extra_ext_rows)
-
-            for idx, row_data in enumerate(flattened_ext_xyz):
-                curr_row = target_row_ext_xyz + idx
-                sheet_tpl.row_dimensions[curr_row].height = 16.5
-
-                cell_no = sheet_tpl.cell(row=curr_row, column=target_col_ext_xyz)
-                cell_no.value = row_data["no"]
-                cell_no.font = font_arial_10
-                cell_no.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
-                
-                cell_text = sheet_tpl.cell(row=curr_row, column=target_col_ext_xyz + 1)
-                cell_text.value = row_data["text"]
-                cell_text.font = font_arial_10
-                cell_text.alignment = Alignment(horizontal='left', vertical='center', wrap_text=False)
-                
-# ==========================================
-        # 2. PROSES INTERNAL CONNECTION (DIPERBAIKI)
+        # 2. PROSES INTERNAL CONNECTION
         # ==========================================
         target_row_internal = None
         target_col_internal = None
@@ -676,38 +881,31 @@ def process_single_file(source_path, output_dir):
             
             bullet_counter = 1
             for text_item in data_internal:
+                cleaned_text = re.sub(r'^[\-\•\*\–]\s*', '', str(text_item)).strip()
+                while cleaned_text.startswith('-') or cleaned_text.startswith('–'):
+                    cleaned_text = cleaned_text.lstrip('-–').strip()
+
+                if not cleaned_text:
+                    continue
+
                 lines = textwrap.wrap(
-                    text_item, 
+                    cleaned_text, 
                     width=INTERNAL_CHARS_PER_LINE, 
                     break_long_words=True, 
                     break_on_hyphens=False
                 ) or [""]
-
-                # Cek apakah ini teks pengantar (misal mengandung kata menyangkut/menjalin) atau poin bernomor
-                is_intro = "menjalin" in text_item.lower() or "menyangkut" in text_item.lower() or "komunikasi" in text_item.lower()
                 
                 for l_idx, line in enumerate(lines):
-                    if is_intro:
-                        flattened_internal.append({
-                            "no": "",
-                            "text": line
-                        })
-                    elif text_item == "-":
-                        flattened_internal.append({
-                            "no": "",
-                            "text": "-"
-                        })
-                    else:
-                        flattened_internal.append({
-                            "no": f"{bullet_counter}." if l_idx == 0 else "",
-                            "text": line
-                        })
-                if not is_intro and text_item != "-":
-                    bullet_counter += 1
+                    flattened_internal.append({
+                        "no": f"{bullet_counter}." if l_idx == 0 else "",
+                        "text": line
+                    })
+                bullet_counter += 1
 
-            # Jika baris internal memerlukan insert row tambahan
-            if len(flattened_internal) > 3:
-                insert_rows_and_preserve_layout(sheet_tpl, row_idx=target_row_internal + 3, amount=len(flattened_internal) - 3)
+            total_internal_rows = len(flattened_internal)
+
+            if total_internal_rows > 4:
+                insert_rows_and_preserve_layout(sheet_tpl, row_idx=target_row_internal + 3, amount=total_internal_rows - 3)
 
             for idx, row_data in enumerate(flattened_internal):
                 curr_row = target_row_internal + idx
@@ -723,8 +921,171 @@ def process_single_file(source_path, output_dir):
                 cell_text.font = font_arial_10
                 cell_text.alignment = Alignment(horizontal='left', vertical='center', wrap_text=False)
 
+                # REVISI: Penambalan border menggunakan double_side (garis ganda) secara tegas pada Kolom 1 (A)
+                cell_a = sheet_tpl.cell(row=curr_row, column=106)
+                cell_a.border = Border(
+                    left=cell_a.border.left if cell_a.border else None,
+                    right=double_side,
+                    top=cell_a.border.top if cell_a.border else None,
+                    bottom=cell_a.border.bottom if cell_a.border else None
+                )
+
+                # 2. Penambalan border kanan di Kolom BK (Column "BK" / Index 63)
+                cell_bk = sheet_tpl.cell(row=curr_row, column=106)  # BK = Kolom ke-63
+                cell_bk.border = Border(
+                    left=cell_bk.border.left if cell_bk.border else None,
+                    right=double_side,
+                    top=cell_bk.border.top if cell_bk.border else None,
+                    bottom=cell_bk.border.bottom if cell_bk.border else None
+                )
+
+
+
+# ==========================================
+        # PROSES EXTERNAL CONNECTION (DI-UPDATE & DIRAPIHKAN)
         # ==========================================
-        # 3. PROSES WEWENANG (TETAP AMAN TIDAK DIUBAH)
+        data_external = extract_external_connection(sheet_src)
+        
+        target_row_ext = None
+        target_col_ext = None
+        
+        for r in range(1, sheet_tpl.max_row + 1):
+            for c in range(1, sheet_tpl.max_column + 1):
+                val = sheet_tpl.cell(row=r, column=c).value
+                if val and "EXTERNALCONNECTION" in str(val).upper():
+                    target_row_ext = r
+                    target_col_ext = c
+                    break
+            if target_row_ext:
+                break
+
+        if target_row_ext:
+            EXT_CHARS_PER_LINE = 55
+            flattened_ext = []
+            
+            if data_external:
+                bullet_counter = 1
+                for text_item in data_external:
+                    lines = textwrap.wrap(
+                        text_item, 
+                        width=EXT_CHARS_PER_LINE, 
+                        break_long_words=True, 
+                        break_on_hyphens=False
+                    ) or [""]
+                    
+                    for l_idx, line in enumerate(lines):
+                        flattened_ext.append({
+                            "no": f"{bullet_counter}." if l_idx == 0 else "",
+                            "text": line
+                        })
+                    bullet_counter += 1
+            else:
+                # Fallback jika tidak terdeteksi: tulis 1 -, 2 -, 3 -
+                fallback_items = ["-", "-", "-"]
+                for idx, f_item in enumerate(fallback_items, start=1):
+                    flattened_ext.append({
+                        "no": f"{idx}.",
+                        "text": f_item
+                    })
+
+            # Perapihan layout rows: Jika lebih dari 3 baris default template, insert baris otomatis
+            if len(flattened_ext) > 100:
+                insert_rows_and_preserve_layout(sheet_tpl, row_idx=target_row_ext + 3, amount=len(flattened_ext) - 3)
+
+            for idx, row_data in enumerate(flattened_ext):
+                curr_row = target_row_ext + idx
+                sheet_tpl.row_dimensions[curr_row].height = 16.5
+
+                cell_no = sheet_tpl.cell(row=curr_row, column=target_col_ext)
+                cell_no.value = row_data["no"]
+                cell_no.font = font_arial_10
+                cell_no.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
+                
+                cell_text = sheet_tpl.cell(row=curr_row, column=target_col_ext + 1)
+                cell_text.value = row_data["text"]
+                cell_text.font = font_arial_10
+                cell_text.alignment = Alignment(horizontal='left', vertical='center', wrap_text=False)
+
+                # Tambal border kiri (kolom 1) secara presisi
+                cell_a = sheet_tpl.cell(row=curr_row, column=1)
+                cell_a.border = Border(
+                    left=cell_a.border.left if cell_a.border else None,
+                    right=thin_side,
+                    top=cell_a.border.top if cell_a.border else None,
+                    bottom=cell_a.border.bottom if cell_a.border else None
+                )
+
+        # ==========================================
+        # 3. PROSES EXTERNAL XYZ CONNECTION [FITUR BARU]
+        # ==========================================
+        target_row_ext_xyz = None
+        target_col_ext_xyz = None
+        
+        for r in range(1, sheet_tpl.max_row + 1):
+            for c in range(1, sheet_tpl.max_column + 1):
+                val = sheet_tpl.cell(row=r, column=c).value
+                if val and "EXTERNALXYZCONNECTION" in str(val).upper():
+                    target_row_ext_xyz = r
+                    target_col_ext_xyz = c
+                    break
+            if target_row_ext_xyz:
+                break
+
+        if target_row_ext_xyz:
+            EXT_XYZ_CHARS_PER_LINE = 55
+            flattened_ext_xyz = []
+            
+            bullet_counter = 1
+            for text_item in data_ext_xyz:
+                cleaned_text = re.sub(r'^[\-\•\*\–]\s*', '', str(text_item)).strip()
+                while cleaned_text.startswith('-') or cleaned_text.startswith('–'):
+                    cleaned_text = cleaned_text.lstrip('-–').strip()
+
+                if not cleaned_text:
+                    continue
+
+                lines = textwrap.wrap(
+                    cleaned_text, 
+                    width=EXT_XYZ_CHARS_PER_LINE, 
+                    break_long_words=True, 
+                    break_on_hyphens=False
+                ) or [""]
+                
+                for l_idx, line in enumerate(lines):
+                    flattened_ext_xyz.append({
+                        "no": f"{bullet_counter}." if l_idx == 0 else "",
+                        "text": line
+                    })
+                bullet_counter += 1
+
+            if len(flattened_ext_xyz) > 100:
+                insert_rows_and_preserve_layout(sheet_tpl, row_idx=target_row_ext_xyz + 3, amount=len(flattened_ext_xyz) - 3)
+
+            for idx, row_data in enumerate(flattened_ext_xyz):
+                curr_row = target_row_ext_xyz + idx
+                sheet_tpl.row_dimensions[curr_row].height = 16.5
+
+                cell_no = sheet_tpl.cell(row=curr_row, column=target_col_ext_xyz)
+                cell_no.value = row_data["no"]
+                cell_no.font = font_arial_10
+                cell_no.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
+                
+                cell_text = sheet_tpl.cell(row=curr_row, column=target_col_ext_xyz + 1)
+                cell_text.value = row_data["text"]
+                cell_text.font = font_arial_10
+                cell_text.alignment = Alignment(horizontal='left', vertical='center', wrap_text=False)
+
+                # Tambal border kolom A (column=1) secara presisi
+                cell_a = sheet_tpl.cell(row=curr_row, column=1)
+                cell_a.border = Border(
+                    left=cell_a.border.left if cell_a.border else None,
+                    right=thin_side,
+                    top=cell_a.border.top if cell_a.border else None,
+                    bottom=cell_a.border.bottom if cell_a.border else None
+                )
+            
+        # ==========================================
+        # 4. PROSES WEWENANG
         # ==========================================
         if data_wewenang:
             target_row_wewenang = None
@@ -776,10 +1137,10 @@ def process_single_file(source_path, output_dir):
         out_name = generate_new_filename(os.path.basename(source_path))
         output_path = os.path.join(output_dir, out_name)
         wb_tpl.save(output_path)
-        print(f"✅ [BERHASIL] {os.path.basename(source_path)} -> {out_name}")
+        print(f" [BERHASIL] {os.path.basename(source_path)} -> {out_name}")
 
     except Exception as e:
-        print(f"❌ [GAGAL] Error memproses {os.path.basename(source_path)}: {str(e)}")
+        print(f" [GAGAL] Error memproses {os.path.basename(source_path)}: {str(e)}")
 
 
 def batch_process():
